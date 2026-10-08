@@ -258,15 +258,28 @@ details.passage-collapsed > summary .wc-badge { margin-left:auto; }
 
 .flash-dir { font-size:10px; font-weight:800; color:var(--text-3); letter-spacing:.05em; margin-bottom:12px; }
 
-/* Paliers d'apprentissage */
-.level-track { display:flex; align-items:center; gap:5px; margin:10px 0 0; }
-.level-dot { width:22px; height:4px; border-radius:2px; background:var(--border); }
-.level-dot.on.lvl0 { background:var(--text-3); }
-.level-dot.on.lvl1 { background:#C0564F; }
-.level-dot.on.lvl2 { background:#C8842E; }
-.level-dot.on.lvl3 { background:var(--green); }
-.level-name { font-size:10.5px; font-weight:800; margin-left:4px; letter-spacing:.01em; }
-.btn-sub { display:block; font-size:9.5px; font-weight:600; opacity:.75; margin-top:1px; }
+/* États de carte (modèle Anki) */
+.level-track { display:flex; align-items:center; flex-wrap:wrap; gap:7px; margin:10px 0 0; }
+.state-pill { display:inline-block; font-size:10px; font-weight:800; padding:2px 8px; border:1px solid; border-radius:999px; }
+.level-name { font-size:10.5px; font-weight:700; color:var(--text-3); }
+
+/* Boutons de réponse Again / Hard / Good / Easy */
+.rating-row { display:flex; gap:6px; margin-top:14px; }
+.rating-btn { flex:1 1 0; min-width:0; font-family:inherit; cursor:pointer; padding:11px 4px 9px; border-radius:var(--radius-sm); border:1px solid var(--rc); background:var(--surface); color:var(--rc); display:flex; flex-direction:column; align-items:center; gap:3px; }
+.rating-btn:active { background:var(--rc); color:#fff; }
+.rating-label { font-size:12.5px; font-weight:800; letter-spacing:-.01em; }
+.rating-when { font-size:10px; font-weight:700; opacity:.8; white-space:nowrap; }
+.rating-legend { font-size:10px; color:var(--text-3); text-align:center; margin-top:8px; font-weight:600; }
+
+/* Icône crayon des réglages */
+.dir-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+.dir-head .dir-label { margin-bottom:0; }
+.icon-btn { display:grid; place-items:center; width:28px; height:28px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--text-2); cursor:pointer; }
+.icon-btn svg { width:14px; height:14px; }
+.icon-btn:active { background:var(--soft); }
+
+.sched-field em { font-style:normal; color:var(--text-3); font-weight:600; }
+.sched-field small { display:block; font-size:10.5px; color:var(--text-3); margin-top:4px; line-height:1.45; }
 .deck-btn.tiny { font-size:10px; padding:4px 9px; color:var(--text-3); }
 .deck-mini-bar { height:3px; background:var(--border); border-radius:2px; overflow:hidden; margin-top:5px; }
 .deck-mini-fill { height:100%; background:var(--green); border-radius:2px; transition:width .25s; }
@@ -541,45 +554,223 @@ function cardIsEnToFr(index) {
 
 function deckKey(skill, n) { return skill + ':' + n; }
 
-// --- Niveaux d'apprentissage par carte -------------------------------------
-// Chaque carte monte d'un palier à chaque « Je la sais » et redescend d'un
-// palier à chaque « À revoir ». Le deck tourne en boucle tant qu'une carte
-// n'est pas au dernier palier. Les niveaux sont indexés par TERME (et non par
-// position) pour survivre à l'édition ou au réimport d'un deck.
-const CARD_LEVELS = [
-  { id: 0, label: 'À apprendre', short: 'Nouvelle', color: 'var(--text-3)' },
-  { id: 1, label: 'À revoir', short: 'À revoir', color: '#C0564F' },
-  { id: 2, label: 'En cours', short: 'En cours', color: '#C8842E' },
-  { id: 3, label: 'Acquise', short: 'Acquise', color: 'var(--green)' }
+// --- Planification type Anki (SM-2) ----------------------------------------
+// Quatre réponses possibles et les quatre états de carte d'Anki. Les cartes
+// neuves et en apprentissage repassent dans la session courante (steps en
+// minutes) ; une fois diplômées, elles reviennent à une date (intervalle en
+// jours). L'état est indexé par TERME, pour survivre à l'édition d'un deck.
+const RATINGS = [
+  { id: 'again', label: 'Again', fr: 'À revoir', color: '#C0564F', key: 1 },
+  { id: 'hard', label: 'Hard', fr: 'Difficile', color: '#C8842E', key: 2 },
+  { id: 'good', label: 'Good', fr: 'Correct', color: '#2E7D5B', key: 3 },
+  { id: 'easy', label: 'Easy', fr: 'Facile', color: '#4169E1', key: 4 }
 ];
-const CARD_MASTERED = 3;
 
-function cardLevels(skill, n) {
+const CARD_STATES = {
+  new: { label: 'Nouvelle', color: 'var(--text-3)' },
+  learning: { label: 'Apprentissage', color: '#4169E1' },
+  relearning: { label: 'Réapprentissage', color: '#C0564F' },
+  review: { label: 'Révision', color: 'var(--green)' }
+};
+
+// Réglages par défaut d'Anki, tous modifiables depuis l'icône crayon.
+const SCHED_DEFAULTS = {
+  learningSteps: [1, 10],      // minutes, cartes neuves
+  relearningSteps: [10],       // minutes, après un oubli
+  graduatingInterval: 1,       // jours, sortie d'apprentissage sur « Good »
+  easyInterval: 4,             // jours, sortie immédiate sur « Easy »
+  startingEase: 2.50,
+  easyBonus: 1.30,
+  hardInterval: 1.20,
+  intervalModifier: 1.00,
+  newInterval: 0.00,           // multiplicateur d'intervalle après un oubli
+  maximumInterval: 36500       // jours
+};
+
+const SCHED_FIELDS = [
+  { id: 'learningSteps', label: 'Étapes d\'apprentissage', unit: 'minutes', type: 'steps', hint: 'Séparées par un espace, ex. « 1 10 ».' },
+  { id: 'relearningSteps', label: 'Étapes de réapprentissage', unit: 'minutes', type: 'steps', hint: 'Appliquées après un « Again » sur une carte en révision.' },
+  { id: 'graduatingInterval', label: 'Intervalle de sortie', unit: 'jours', type: 'int', min: 1, hint: 'Délai après la dernière étape, via « Good ».' },
+  { id: 'easyInterval', label: 'Intervalle « Easy »', unit: 'jours', type: 'int', min: 1, hint: 'Délai quand une carte neuve sort directement par « Easy ».' },
+  { id: 'startingEase', label: 'Facilité de départ', unit: '×', type: 'float', min: 1.3, hint: 'Multiplicateur initial. Anki : 2.50.' },
+  { id: 'easyBonus', label: 'Bonus « Easy »', unit: '×', type: 'float', min: 1, hint: 'Multiplicateur supplémentaire sur « Easy ».' },
+  { id: 'hardInterval', label: 'Multiplicateur « Hard »', unit: '×', type: 'float', min: 1, hint: 'Appliqué à l\'intervalle sur « Hard ».' },
+  { id: 'intervalModifier', label: 'Modificateur global', unit: '×', type: 'float', min: 0.1, hint: 'Allonge (>1) ou raccourcit (<1) tous les intervalles.' },
+  { id: 'newInterval', label: 'Nouvel intervalle après oubli', unit: '×', type: 'float', min: 0, max: 1, hint: 'Part de l\'intervalle conservée après un « Again ». Anki : 0.' },
+  { id: 'maximumInterval', label: 'Intervalle maximum', unit: 'jours', type: 'int', min: 1, hint: 'Plafond absolu.' }
+];
+
+function sched() {
+  return Object.assign({}, SCHED_DEFAULTS, vocab.settings.sched || {});
+}
+
+// --- Dates -----------------------------------------------------------------
+function addDays(dateKey, days) {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + Math.round(days));
+  return formatDateKey(dt.getFullYear(), dt.getMonth(), dt.getDate());
+}
+
+function isDue(dateKey) {
+  return !dateKey || dateKey <= todayKeyNow;
+}
+
+function formatInterval(days) {
+  if (days < 1) return Math.max(1, Math.round(days * 1440)) + ' min';
+  if (days < 30) return Math.round(days) + ' j';
+  if (days < 365) return (days / 30).toFixed(days < 60 ? 1 : 0).replace('.0', '') + ' mois';
+  return (days / 365).toFixed(1).replace('.0', '') + ' ans';
+}
+
+// --- État d'une carte ------------------------------------------------------
+function freshCard() {
+  return { state: 'new', step: 0, ease: sched().startingEase, interval: 0, due: null, reps: 0, lapses: 0 };
+}
+
+function deckCardStates(skill, n) {
   const key = deckKey(skill, n);
   if (!vocab.cards[key]) vocab.cards[key] = {};
   return vocab.cards[key];
 }
 
-function getCardLevel(skill, n, term) {
-  const lv = cardLevels(skill, n)[term];
-  return typeof lv === 'number' ? Math.min(Math.max(lv, 0), CARD_MASTERED) : 0;
+function getCardState(skill, n, term) {
+  const store = deckCardStates(skill, n);
+  const raw = store[term];
+  if (raw && typeof raw === 'object') return Object.assign(freshCard(), raw);
+  // Migration de l'ancien système à 4 paliers (un simple entier 0–3) :
+  // un palier 3 valait « acquise », on la considère diplômée et due aujourd'hui.
+  if (typeof raw === 'number') {
+    const migrated = freshCard();
+    if (raw >= 3) {
+      migrated.state = 'review';
+      migrated.interval = sched().graduatingInterval;
+      migrated.due = todayKeyNow;
+      migrated.reps = 1;
+    } else if (raw > 0) {
+      migrated.state = 'learning';
+      migrated.step = Math.min(raw, Math.max(0, sched().learningSteps.length - 1));
+    }
+    store[term] = migrated;
+    return migrated;
+  }
+  return freshCard();
 }
 
-function setCardLevel(skill, n, term, level) {
-  cardLevels(skill, n)[term] = Math.min(Math.max(level, 0), CARD_MASTERED);
+function setCardState(skill, n, term, state) {
+  deckCardStates(skill, n)[term] = state;
+}
+
+function isGraduated(skill, n, term) {
+  return getCardState(skill, n, term).state === 'review';
 }
 
 function deckProgress(skill, n) {
   const d = getDecks(skill).find(x => x.n === n);
-  if (!d || !d.cards.length) return { mastered: 0, total: 0, ratio: 0 };
-  const mastered = d.cards.filter(c => getCardLevel(skill, n, c.term) >= CARD_MASTERED).length;
-  return { mastered, total: d.cards.length, ratio: mastered / d.cards.length };
+  if (!d || !d.cards.length) return { mastered: 0, total: 0, ratio: 0, due: 0 };
+  const mastered = d.cards.filter(c => isGraduated(skill, n, c.term)).length;
+  const due = d.cards.filter(c => {
+    const st = getCardState(skill, n, c.term);
+    return st.state !== 'review' || isDue(st.due);
+  }).length;
+  return { mastered, total: d.cards.length, ratio: mastered / d.cards.length, due };
 }
 
-// Un deck est acquis lorsque TOUTES ses cartes ont atteint le dernier palier.
-function isDeckLearned(skill, n) {
-  const p = deckProgress(skill, n);
-  return p.total > 0 && p.mastered === p.total;
+// Intervalle qu'obtiendrait la carte pour chaque réponse, sans rien modifier :
+// sert à afficher le délai sous chaque bouton, comme Anki.
+function previewRating(st, rating) {
+  const next = applyRating(Object.assign({}, st), rating, sched());
+  if (next.state === 'learning' || next.state === 'relearning') {
+    const steps = next.state === 'learning' ? sched().learningSteps : sched().relearningSteps;
+    const mins = steps[Math.min(next.step, steps.length - 1)] || 1;
+    return mins + ' min';
+  }
+  return formatInterval(next.interval);
+}
+
+// Cœur de la planification. Modifie et renvoie l'état de carte.
+function applyRating(st, rating, cfg) {
+  const cap = v => Math.min(Math.max(v, 1 / 1440), cfg.maximumInterval);
+
+  if (st.state === 'new' || st.state === 'learning' || st.state === 'relearning') {
+    const relearn = st.state === 'relearning';
+    const steps = relearn ? cfg.relearningSteps : cfg.learningSteps;
+
+    if (rating === 'again') {
+      st.state = relearn ? 'relearning' : 'learning';
+      st.step = 0;
+    } else if (rating === 'hard') {
+      st.state = relearn ? 'relearning' : 'learning';
+      st.step = Math.min(st.step, Math.max(0, steps.length - 1));
+    } else if (rating === 'good') {
+      st.step += 1;
+      if (st.step >= steps.length) {
+        st.state = 'review';
+        st.interval = cap(relearn ? Math.max(cfg.graduatingInterval, st.interval) : cfg.graduatingInterval);
+        st.due = addDays(todayKeyNow, st.interval);
+        st.step = 0;
+      } else {
+        st.state = relearn ? 'relearning' : 'learning';
+      }
+    } else { // easy
+      st.state = 'review';
+      st.interval = cap(relearn ? Math.max(cfg.easyInterval, st.interval + 1) : cfg.easyInterval);
+      st.due = addDays(todayKeyNow, st.interval);
+      st.step = 0;
+    }
+    st.reps += 1;
+    return st;
+  }
+
+  // Carte en révision
+  const base = st.interval || cfg.graduatingInterval;
+  if (rating === 'again') {
+    st.lapses += 1;
+    st.ease = Math.max(1.3, st.ease - 0.20);
+    st.interval = cap(Math.max(cfg.graduatingInterval, base * cfg.newInterval));
+    st.state = cfg.relearningSteps.length ? 'relearning' : 'review';
+    st.step = 0;
+    st.due = st.state === 'review' ? addDays(todayKeyNow, st.interval) : null;
+  } else if (rating === 'hard') {
+    st.ease = Math.max(1.3, st.ease - 0.15);
+    st.interval = cap(base * cfg.hardInterval * cfg.intervalModifier);
+    st.due = addDays(todayKeyNow, st.interval);
+  } else if (rating === 'good') {
+    st.interval = cap(base * st.ease * cfg.intervalModifier);
+    st.due = addDays(todayKeyNow, st.interval);
+  } else {
+    st.ease = st.ease + 0.15;
+    st.interval = cap(base * st.ease * cfg.easyBonus * cfg.intervalModifier);
+    st.due = addDays(todayKeyNow, st.interval);
+  }
+  st.reps += 1;
+  return st;
+}
+
+function setSchedField(id, raw) {
+  const field = SCHED_FIELDS.find(f => f.id === id);
+  if (!field) return;
+  const cur = sched();
+  let value;
+  if (field.type === 'steps') {
+    value = String(raw).split(/[\s,]+/).map(Number).filter(v => Number.isFinite(v) && v > 0);
+    if (!value.length) return;
+  } else {
+    value = field.type === 'int' ? parseInt(raw, 10) : parseFloat(String(raw).replace(',', '.'));
+    if (!Number.isFinite(value)) return;
+    if (field.min !== undefined) value = Math.max(field.min, value);
+    if (field.max !== undefined) value = Math.min(field.max, value);
+  }
+  cur[id] = value;
+  vocab.settings.sched = cur;
+  saveVocab();
+}
+
+function resetSchedDefaults() {
+  if (!confirm('Rétablir les réglages par défaut d\'Anki ?')) return;
+  delete vocab.settings.sched;
+  saveVocab();
+  render();
 }
 
 function resetDeckProgress(skill, n) {
@@ -1081,8 +1272,8 @@ const VOCAB_DECKS = {
 };
 
 const CARDS_PER_DECK = 10;
-// Un deck est acquis quand toutes ses cartes atteignent le dernier palier
-// (voir CARD_LEVELS) : il n'y a plus de seuil partiel.
+// Un deck est acquis quand toutes ses cartes sont sorties d'apprentissage
+// (état « review », voir CARD_STATES) : il n'y a plus de seuil partiel.
 const DECKS_PER_BLOCK = 5;     // un test de synthèse tous les 5 decks
 const TEST_LENGTH = 20;
 const TEST_PASS_MARK = 16;
@@ -2634,25 +2825,25 @@ function resetVocabView() {
   vocabView = { mode: 'list', skill: null, n: null, i: 0, flipped: false, results: [], test: null, draft: null };
 }
 
-// Construit la file de la session : toutes les cartes pas encore acquises,
-// mélangées. Si le deck est déjà entièrement acquis, on redescend chaque carte
-// d'un palier pour proposer une révision d'entretien plutôt qu'une file vide.
+// File de la session : cartes neuves, en (ré)apprentissage, et cartes en
+// révision arrivées à échéance. Si tout est à jour, on propose quand même une
+// révision d'entretien plutôt qu'une file vide.
 function buildDeckQueue(skill, n) {
   const d = getDecks(skill).find(x => x.n === n);
   if (!d) return [];
-  let pending = d.cards.filter(c => getCardLevel(skill, n, c.term) < CARD_MASTERED);
-  if (!pending.length) {
-    d.cards.forEach(c => setCardLevel(skill, n, c.term, CARD_MASTERED - 1));
-    saveVocab();
-    pending = d.cards.slice();
-  }
-  return shuffle(pending.map(c => c.term));
+  const pending = d.cards.filter(c => {
+    const st = getCardState(skill, n, c.term);
+    return st.state !== 'review' || isDue(st.due);
+  });
+  if (pending.length) return shuffle(pending.map(c => c.term));
+  return shuffle(d.cards.map(c => c.term));   // révision d'entretien anticipée
 }
 
 function openDeck(skill, n) {
+  const queue = buildDeckQueue(skill, n);
   vocabView = {
     mode: 'flash', skill, n, i: 0, flipped: false, results: [], test: null, draft: null,
-    queue: buildDeckQueue(skill, n), seen: 0, promoted: 0, demoted: 0
+    queue, seen: 0, again: 0, graduatedHere: 0, ahead: !deckProgress(skill, n).due
   };
   render();
 }
@@ -2672,28 +2863,41 @@ function flipCard() {
   render();
 }
 
-function markCard(known) {
+// Les étapes d'apprentissage d'Anki se comptent en minutes réelles. Ici la
+// session est continue : on approxime le délai par une distance dans la file,
+// proportionnelle à l'étape (plus l'étape est longue, plus la carte revient
+// tard). Les intervalles en JOURS, eux, sont respectés à la lettre.
+function requeueGap(minutes, queueLength) {
+  if (minutes <= 1) return Math.min(2, queueLength);
+  if (minutes <= 10) return Math.min(6, queueLength);
+  return queueLength;
+}
+
+function answerCard(rating) {
   const d = currentDeck();
   const term = vocabView.queue[0];
   if (!d || term === undefined) return;
+  if (!RATINGS.some(r => r.id === rating)) return;
 
   const skill = vocabView.skill;
-  const before = getCardLevel(skill, d.n, term);
-  const after = known ? before + 1 : before - 1;
-  setCardLevel(skill, d.n, term, after);
+  const before = getCardState(skill, d.n, term);
+  const wasGraduated = before.state === 'review';
+  const after = applyRating(Object.assign({}, before), rating, sched());
+  setCardState(skill, d.n, term, after);
 
-  vocabView.results.push(!!known);
+  vocabView.results.push(rating);
   vocabView.seen += 1;
-  if (known) vocabView.promoted += 1; else vocabView.demoted += 1;
+  if (rating === 'again') vocabView.again += 1;
+  if (!wasGraduated && after.state === 'review') vocabView.graduatedHere += 1;
   vocabView.flipped = false;
 
   vocabView.queue.shift();
-  // Une carte non acquise revient plus loin dans la file, jamais tout de suite :
-  // la revoir immédiatement testerait la mémoire courte, pas l'apprentissage.
-  if (getCardLevel(skill, d.n, term) < CARD_MASTERED) {
-    const gap = known ? 4 : 2;
-    const at = Math.min(gap, vocabView.queue.length);
-    vocabView.queue.splice(at, 0, term);
+  // Une carte encore en apprentissage repasse dans la session ; une carte
+  // diplômée en sort, elle reviendra à sa date d'échéance.
+  if (after.state === 'learning' || after.state === 'relearning') {
+    const steps = after.state === 'learning' ? sched().learningSteps : sched().relearningSteps;
+    const mins = steps[Math.min(after.step, steps.length - 1)] || 1;
+    vocabView.queue.splice(requeueGap(mins, vocabView.queue.length), 0, term);
   }
 
   saveVocab();
@@ -2711,28 +2915,36 @@ function currentCard() {
   return d.cards.find(c => c.term === vocabView.queue[0]) || null;
 }
 
-// La file ne se vide que lorsque toutes les cartes sont acquises : atteindre
-// ce point SIGNIFIE que le deck est acquis, il n'y a plus de seuil à vérifier.
+// La file se vide quand plus aucune carte n'est due aujourd'hui. Le deck est
+// « acquis » lorsque toutes ses cartes sont sorties d'apprentissage (état
+// « révision »), ce qui conditionne le test de synthèse du bloc.
 function finishDeck() {
   const d = currentDeck();
   if (!d) return;
   const key = deckKey(vocabView.skill, d.n);
   const previous = vocab.decks[key];
   const alreadyLogged = !!(previous && previous.learned);
+  const learned = isDeckLearned(vocabView.skill, d.n);
 
   vocab.decks[key] = {
-    learned: true,
+    learned: learned || alreadyLogged,
     reviews: (previous && previous.reviews ? previous.reviews : 0) + 1,
     lastSeen: vocabView.seen,
     date: todayKeyNow
   };
-  // L'acquisition n'est journalisée qu'une fois : les révisions d'entretien
-  // ultérieures ne doivent pas regonfler le calendrier.
-  if (!alreadyLogged) {
+  // L'acquisition n'est journalisée qu'une fois : les révisions ultérieures
+  // ne doivent pas regonfler le calendrier.
+  if (learned && !alreadyLogged) {
     logVocabEvent({ kind: 'deck', skill: vocabView.skill, n: d.n, score: d.cards.length });
   }
   saveVocab();
   vocabView.mode = 'deckResult';
+}
+
+function isDeckLearned(skill, n) {
+  const d = getDecks(skill).find(x => x.n === n);
+  if (!d || !d.cards.length) return false;
+  return d.cards.every(c => isGraduated(skill, n, c.term));
 }
 
 function retryDeck() {
@@ -2857,7 +3069,12 @@ function renderDeckList(skill) {
     </div>
 
     <div class="dir-row">
-      <span class="dir-label">Sens de révision</span>
+      <div class="dir-head">
+        <span class="dir-label">Sens de révision</span>
+        <button class="icon-btn" title="Réglages de planification" aria-label="Réglages de planification" onclick="openSchedSettings('${skill}')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+        </button>
+      </div>
       <div class="dir-switch">
         ${DIRECTIONS.map(d => `
           <button class="dir-btn ${vocab.settings.direction === d.id ? 'active' : ''}"
@@ -2870,17 +3087,17 @@ function renderDeckList(skill) {
       ${decks.map(d => {
         const learned = isDeckLearned(skill, d.n);
         const p = deckProgress(skill, d.n);
-        const started = d.cards.some(c => getCardLevel(skill, d.n, c.term) > 0);
+        const started = d.cards.some(c => getCardState(skill, d.n, c.term).reps > 0);
         return `
           <div class="deck-card ${learned ? 'learned' : ''}">
             <div class="deck-num">${d.n}</div>
             <div class="deck-info">
               <div class="deck-title">${escapeHTML(d.title)}</div>
-              <div class="deck-sub">${p.mastered}/${p.total} cartes acquises</div>
+              <div class="deck-sub">${p.mastered}/${p.total} acquises${p.due ? ` · <b style="color:var(--blue)">${p.due} à revoir</b>` : ' · à jour'}</div>
               <div class="deck-mini-bar"><div class="deck-mini-fill" style="width:${p.ratio * 100}%"></div></div>
             </div>
             <div class="deck-actions">
-              <button class="deck-btn primary" onclick="openDeck('${skill}', ${d.n})">${learned ? 'Réviser' : (started ? 'Continuer' : 'Apprendre')}</button>
+              <button class="deck-btn primary" onclick="openDeck('${skill}', ${d.n})">${p.due ? (started ? 'Réviser' : 'Apprendre') : 'En avance'}</button>
               <button class="deck-btn" onclick="openTable('${skill}', ${d.n})">Tableau</button>
               ${started ? `<button class="deck-btn tiny" onclick="resetDeckProgress('${skill}', ${d.n})">Réinitialiser</button>` : ''}
             </div>
@@ -2906,8 +3123,8 @@ function renderFlash(skill) {
   if (!card) return renderDeckList(skill);
 
   const prog = deckProgress(skill, d.n);
-  const level = getCardLevel(skill, d.n, card.term);
-  const lv = CARD_LEVELS[level];
+  const st = getCardState(skill, d.n, card.term);
+  const lv = CARD_STATES[st.state];
   const enToFr = cardIsEnToFr(vocabView.seen);
   const front = enToFr ? card.term : card.fr;
   const back = enToFr ? card.fr : card.term;
@@ -2920,9 +3137,10 @@ function renderFlash(skill) {
     </div>
     <div class="vocab-bar"><div class="vocab-bar-fill" style="width:${prog.ratio * 100}%"></div></div>
 
-    <div class="level-track" title="Palier de cette carte">
-      ${CARD_LEVELS.map(l => `<span class="level-dot ${l.id <= level ? 'on' : ''} lvl${l.id}"></span>`).join('')}
-      <span class="level-name" style="color:${lv.color}">${escapeHTML(lv.label)}</span>
+    <div class="level-track">
+      <span class="state-pill" style="color:${lv.color};border-color:${lv.color}">${escapeHTML(lv.label)}</span>
+      ${st.state === 'review' ? `<span class="level-name">intervalle ${formatInterval(st.interval)} · facilité ${st.ease.toFixed(2)}</span>` : ''}
+      ${st.lapses ? `<span class="level-name" style="color:#C0564F">${st.lapses} oubli${st.lapses > 1 ? 's' : ''}</span>` : ''}
     </div>
 
     <div class="flashcard ${vocabView.flipped ? 'flipped' : ''}" onclick="flipCard()">
@@ -2938,10 +3156,15 @@ function renderFlash(skill) {
     </div>
 
     ${vocabView.flipped ? `
-      <div class="flash-actions">
-        <button class="deck-btn wide danger" onclick="markCard(false)">À revoir</button>
-        <button class="deck-btn wide primary" onclick="markCard(true)">Je la sais<span class="btn-sub">${level + 1 >= CARD_MASTERED ? 'acquise' : '+1 palier'}</span></button>
+      <div class="rating-row">
+        ${RATINGS.map(r => `
+          <button class="rating-btn" style="--rc:${r.color}" onclick="answerCard('${r.id}')">
+            <span class="rating-label">${r.label}</span>
+            <span class="rating-when">${escapeHTML(previewRating(st, r.id))}</span>
+          </button>
+        `).join('')}
       </div>
+      <div class="rating-legend">${RATINGS.map(r => r.label + ' = ' + r.fr).join(' · ')}</div>
     ` : ''}
   `;
 }
@@ -2949,16 +3172,21 @@ function renderFlash(skill) {
 function renderDeckResult(skill) {
   const d = currentDeck();
   if (!d) return renderDeckList(skill);
-  const total = d.cards.length;
+  const p = deckProgress(skill, d.n);
   const block = blockOf(d.n);
   const blockNowReady = isBlockComplete(skill, block) && !(vocab.tests[deckKey(skill, block)] || {}).passed;
-  const hesitations = vocabView.demoted;
+  const learned = isDeckLearned(skill, d.n);
+  // Prochaine échéance parmi les cartes diplômées.
+  const nextDue = d.cards
+    .map(c => getCardState(skill, d.n, c.term))
+    .filter(s => s.state === 'review' && s.due)
+    .map(s => s.due).sort()[0];
 
   return `
-    <div class="result-box pass">
-      <div class="result-score">${total}/${total}</div>
-      <div class="result-label">✓ Deck entièrement acquis</div>
-      <p>Toutes les cartes ont atteint le dernier palier en ${vocabView.seen} passage${vocabView.seen > 1 ? 's' : ''}${hesitations ? `, dont ${hesitations} remise${hesitations > 1 ? 's' : ''} en arrière` : ', sans aucune hésitation'}. Enregistré dans le calendrier.</p>
+    <div class="result-box ${learned ? 'pass' : 'fail'}">
+      <div class="result-score">${p.mastered}/${p.total}</div>
+      <div class="result-label">${learned ? '✓ Deck entièrement acquis' : 'Session terminée'}</div>
+      <p>${vocabView.seen} réponse${vocabView.seen > 1 ? 's' : ''}${vocabView.again ? `, dont ${vocabView.again} « Again »` : ' sans aucun « Again »'}${vocabView.graduatedHere ? ` · ${vocabView.graduatedHere} carte${vocabView.graduatedHere > 1 ? 's' : ''} sortie${vocabView.graduatedHere > 1 ? 's' : ''} d'apprentissage` : ''}.${nextDue ? ` Prochaine révision le ${escapeHTML(nextDue)}.` : ''}${learned ? ' Enregistré dans le calendrier.' : ''}</p>
     </div>
     ${blockNowReady ? `<div class="tip-box"><span class="tip-icon">🎯</span><span>Les ${DECKS_PER_BLOCK} decks du bloc sont acquis : le test de synthèse est débloqué.</span></div>` : ''}
     <div class="flash-actions">
@@ -2985,12 +3213,13 @@ function renderVocabTable(skill) {
         <thead><tr><th>Terme</th><th>Sens</th><th>Palier</th></tr></thead>
         <tbody>
           ${d.cards.map(c => {
-            const lv = CARD_LEVELS[getCardLevel(skill, d.n, c.term)];
+            const cs = getCardState(skill, d.n, c.term);
+            const lv = CARD_STATES[cs.state];
             return `
             <tr>
               <td><strong>${escapeHTML(c.term)}</strong><div class="cell-example">${escapeHTML(c.type)} · ${escapeHTML(c.example)}</div></td>
               <td>${escapeHTML(c.fr)}</td>
-              <td><span class="lvl-pill" style="color:${lv.color};border-color:${lv.color}">${escapeHTML(lv.short)}</span></td>
+              <td><span class="lvl-pill" style="color:${lv.color};border-color:${lv.color}">${escapeHTML(lv.label)}</span>${cs.state === 'review' ? `<div class="cell-example">${formatInterval(cs.interval)} · le ${escapeHTML(cs.due || '—')}</div>` : ''}</td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -3220,10 +3449,55 @@ function renderTestResult(skill) {
   `;
 }
 
+function openSchedSettings(skill) {
+  vocabView.mode = 'sched';
+  if (skill) vocabView.skill = skill;
+  render();
+  scrollToTop();
+}
+
+// Les champs écrivent directement dans les réglages, sans re-render : sinon la
+// saisie perdrait le focus à chaque frappe.
+function renderSchedSettings(skill) {
+  const cfg = sched();
+  const custom = !!vocab.settings.sched;
+
+  return `
+    <div class="vocab-topbar">
+      <button class="deck-btn" onclick="backToDeckList()">← Decks</button>
+      <span>Planification</span>
+      <button class="deck-btn primary" onclick="backToDeckList()">Terminé</button>
+    </div>
+
+    <div class="q-group-inst">Mêmes paramètres que les options de deck d'Anki. Les étapes d'apprentissage se jouent dans la session courante ; les intervalles de révision sont comptés en jours réels.</div>
+
+    ${SCHED_FIELDS.map(f => {
+      const val = f.type === 'steps' ? cfg[f.id].join(' ') : cfg[f.id];
+      return `
+        <label class="edit-field sched-field">
+          <span>${escapeHTML(f.label)} <em>(${escapeHTML(f.unit)})</em></span>
+          <input type="${f.type === 'steps' ? 'text' : 'number'}"
+                 ${f.type === 'float' ? 'step="0.05"' : ''}
+                 ${f.min !== undefined ? `min="${f.min}"` : ''}
+                 ${f.max !== undefined ? `max="${f.max}"` : ''}
+                 value="${escapeHTML(String(val))}"
+                 oninput="setSchedField('${f.id}', this.value)">
+          <small>${escapeHTML(f.hint)}</small>
+        </label>`;
+    }).join('')}
+
+    <div class="flash-actions">
+      <button class="deck-btn wide danger" onclick="resetSchedDefaults()">Rétablir les valeurs d'Anki</button>
+    </div>
+    <div class="edit-note">${custom ? 'Réglages personnalisés actifs.' : 'Valeurs par défaut d\'Anki.'} Les modifications s\'appliquent aux prochaines réponses ; les cartes déjà planifiées gardent leur échéance.</div>
+  `;
+}
+
 function renderVocab(skill) {
   // La vue est propre à une compétence : changer d'onglet réinitialise.
   if (vocabView.skill && vocabView.skill !== skill) resetVocabView();
   switch (vocabView.mode) {
+    case 'sched': return renderSchedSettings(skill);
     case 'flash': return renderFlash(skill);
     case 'deckResult': return renderDeckResult(skill);
     case 'table': return renderVocabTable(skill);
@@ -3529,7 +3803,7 @@ function renderSkillModule(skillName) {
     const decks = getDecks(skillName);
     const learned = decks.filter(d => isDeckLearned(skillName, d.n)).length;
     heading = vocabView.mode === 'list'
-      ? `<h2>Vocabulaire</h2><p style="margin-bottom:14px">${decks.length} decks de ${CARDS_PER_DECK} cartes · ${learned} acquis. Chaque deck tourne en boucle jusqu'à ce que toutes ses cartes soient acquises. Un test de synthèse se débloque tous les ${DECKS_PER_BLOCK} decks.</p>`
+      ? `<h2>Vocabulaire</h2><p style="margin-bottom:14px">${decks.length} decks de ${CARDS_PER_DECK} cartes · ${learned} acquis. Révision espacée façon Anki : les cartes neuves tournent en boucle dans la session, puis reviennent à intervalles croissants. Un test de synthèse se débloque tous les ${DECKS_PER_BLOCK} decks.</p>`
       : '';
     body = renderVocab(skillName);
   } else if (currentSubTab === 'exercises') {

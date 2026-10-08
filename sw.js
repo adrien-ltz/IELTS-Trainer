@@ -1,7 +1,7 @@
 // Service Worker — IELTS Prep
 // Met en cache l'app shell pour un fonctionnement hors-ligne.
 // Incrémenter CACHE_VERSION à chaque déploiement pour invalider l'ancien cache.
-const CACHE_VERSION = 'v8';
+const CACHE_VERSION = 'v9';
 const CACHE_NAME = `ielts-prep-${CACHE_VERSION}`;
 
 const APP_SHELL = [
