@@ -258,6 +258,21 @@ details.passage-collapsed > summary .wc-badge { margin-left:auto; }
 
 .flash-dir { font-size:10px; font-weight:800; color:var(--text-3); letter-spacing:.05em; margin-bottom:12px; }
 
+/* Paliers d'apprentissage */
+.level-track { display:flex; align-items:center; gap:5px; margin:10px 0 0; }
+.level-dot { width:22px; height:4px; border-radius:2px; background:var(--border); }
+.level-dot.on.lvl0 { background:var(--text-3); }
+.level-dot.on.lvl1 { background:#C0564F; }
+.level-dot.on.lvl2 { background:#C8842E; }
+.level-dot.on.lvl3 { background:var(--green); }
+.level-name { font-size:10.5px; font-weight:800; margin-left:4px; letter-spacing:.01em; }
+.btn-sub { display:block; font-size:9.5px; font-weight:600; opacity:.75; margin-top:1px; }
+.deck-btn.tiny { font-size:10px; padding:4px 9px; color:var(--text-3); }
+.deck-mini-bar { height:3px; background:var(--border); border-radius:2px; overflow:hidden; margin-top:5px; }
+.deck-mini-fill { height:100%; background:var(--green); border-radius:2px; transition:width .25s; }
+.deck-card.learned .deck-mini-bar { background:rgba(46,125,91,.25); }
+.lvl-pill { display:inline-block; font-size:10px; font-weight:800; padding:2px 7px; border:1px solid; border-radius:999px; white-space:nowrap; }
+
 .edit-note { font-size:11px; color:var(--text-3); line-height:1.5; margin-top:8px; }
 .edit-card { border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; margin-bottom:10px; background:var(--surface); }
 .edit-card-head { display:flex; justify-content:space-between; align-items:center; font-size:11.5px; font-weight:800; color:var(--text-3); margin-bottom:10px; }
@@ -471,11 +486,12 @@ function loadVocab() {
         log: v.log || {},
         custom: v.custom || {},
         exercises: v.exercises || {},
+        cards: v.cards || {},
         settings: Object.assign({ direction: 'en-fr' }, v.settings || {})
       };
     }
   } catch (e) { /* stockage illisible : on repart à zéro */ }
-  return { decks: {}, tests: {}, log: {}, custom: {}, exercises: {}, settings: { direction: 'en-fr' } };
+  return { decks: {}, tests: {}, log: {}, custom: {}, exercises: {}, cards: {}, settings: { direction: 'en-fr' } };
 }
 
 let vocab = loadVocab();
@@ -525,9 +541,53 @@ function cardIsEnToFr(index) {
 
 function deckKey(skill, n) { return skill + ':' + n; }
 
+// --- Niveaux d'apprentissage par carte -------------------------------------
+// Chaque carte monte d'un palier à chaque « Je la sais » et redescend d'un
+// palier à chaque « À revoir ». Le deck tourne en boucle tant qu'une carte
+// n'est pas au dernier palier. Les niveaux sont indexés par TERME (et non par
+// position) pour survivre à l'édition ou au réimport d'un deck.
+const CARD_LEVELS = [
+  { id: 0, label: 'À apprendre', short: 'Nouvelle', color: 'var(--text-3)' },
+  { id: 1, label: 'À revoir', short: 'À revoir', color: '#C0564F' },
+  { id: 2, label: 'En cours', short: 'En cours', color: '#C8842E' },
+  { id: 3, label: 'Acquise', short: 'Acquise', color: 'var(--green)' }
+];
+const CARD_MASTERED = 3;
+
+function cardLevels(skill, n) {
+  const key = deckKey(skill, n);
+  if (!vocab.cards[key]) vocab.cards[key] = {};
+  return vocab.cards[key];
+}
+
+function getCardLevel(skill, n, term) {
+  const lv = cardLevels(skill, n)[term];
+  return typeof lv === 'number' ? Math.min(Math.max(lv, 0), CARD_MASTERED) : 0;
+}
+
+function setCardLevel(skill, n, term, level) {
+  cardLevels(skill, n)[term] = Math.min(Math.max(level, 0), CARD_MASTERED);
+}
+
+function deckProgress(skill, n) {
+  const d = getDecks(skill).find(x => x.n === n);
+  if (!d || !d.cards.length) return { mastered: 0, total: 0, ratio: 0 };
+  const mastered = d.cards.filter(c => getCardLevel(skill, n, c.term) >= CARD_MASTERED).length;
+  return { mastered, total: d.cards.length, ratio: mastered / d.cards.length };
+}
+
+// Un deck est acquis lorsque TOUTES ses cartes ont atteint le dernier palier.
 function isDeckLearned(skill, n) {
-  const d = vocab.decks[deckKey(skill, n)];
-  return !!(d && d.learned);
+  const p = deckProgress(skill, n);
+  return p.total > 0 && p.mastered === p.total;
+}
+
+function resetDeckProgress(skill, n) {
+  if (!confirm('Remettre toutes les cartes de ce deck à zéro ?')) return;
+  delete vocab.cards[deckKey(skill, n)];
+  delete vocab.decks[deckKey(skill, n)];
+  saveVocab();
+  render();
 }
 
 // Un bloc = 5 decks consécutifs. Bloc 1 = decks 1–5, bloc 2 = decks 6–10, etc.
@@ -1021,7 +1081,8 @@ const VOCAB_DECKS = {
 };
 
 const CARDS_PER_DECK = 10;
-const DECK_PASS_MARK = 8;      // cartes sues sur 10 pour valider un deck
+// Un deck est acquis quand toutes ses cartes atteignent le dernier palier
+// (voir CARD_LEVELS) : il n'y a plus de seuil partiel.
 const DECKS_PER_BLOCK = 5;     // un test de synthèse tous les 5 decks
 const TEST_LENGTH = 20;
 const TEST_PASS_MARK = 16;
@@ -2573,8 +2634,26 @@ function resetVocabView() {
   vocabView = { mode: 'list', skill: null, n: null, i: 0, flipped: false, results: [], test: null, draft: null };
 }
 
+// Construit la file de la session : toutes les cartes pas encore acquises,
+// mélangées. Si le deck est déjà entièrement acquis, on redescend chaque carte
+// d'un palier pour proposer une révision d'entretien plutôt qu'une file vide.
+function buildDeckQueue(skill, n) {
+  const d = getDecks(skill).find(x => x.n === n);
+  if (!d) return [];
+  let pending = d.cards.filter(c => getCardLevel(skill, n, c.term) < CARD_MASTERED);
+  if (!pending.length) {
+    d.cards.forEach(c => setCardLevel(skill, n, c.term, CARD_MASTERED - 1));
+    saveVocab();
+    pending = d.cards.slice();
+  }
+  return shuffle(pending.map(c => c.term));
+}
+
 function openDeck(skill, n) {
-  vocabView = { mode: 'flash', skill, n, i: 0, flipped: false, results: [], test: null, draft: null };
+  vocabView = {
+    mode: 'flash', skill, n, i: 0, flipped: false, results: [], test: null, draft: null,
+    queue: buildDeckQueue(skill, n), seen: 0, promoted: 0, demoted: 0
+  };
   render();
 }
 
@@ -2594,11 +2673,31 @@ function flipCard() {
 }
 
 function markCard(known) {
+  const d = currentDeck();
+  const term = vocabView.queue[0];
+  if (!d || term === undefined) return;
+
+  const skill = vocabView.skill;
+  const before = getCardLevel(skill, d.n, term);
+  const after = known ? before + 1 : before - 1;
+  setCardLevel(skill, d.n, term, after);
+
   vocabView.results.push(!!known);
-  vocabView.i += 1;
+  vocabView.seen += 1;
+  if (known) vocabView.promoted += 1; else vocabView.demoted += 1;
   vocabView.flipped = false;
-  const total = currentDeck() ? currentDeck().cards.length : 0;
-  if (vocabView.i >= total) finishDeck();
+
+  vocabView.queue.shift();
+  // Une carte non acquise revient plus loin dans la file, jamais tout de suite :
+  // la revoir immédiatement testerait la mémoire courte, pas l'apprentissage.
+  if (getCardLevel(skill, d.n, term) < CARD_MASTERED) {
+    const gap = known ? 4 : 2;
+    const at = Math.min(gap, vocabView.queue.length);
+    vocabView.queue.splice(at, 0, term);
+  }
+
+  saveVocab();
+  if (!vocabView.queue.length) finishDeck();
   render();
 }
 
@@ -2606,24 +2705,31 @@ function currentDeck() {
   return getDecks(vocabView.skill).find(d => d.n === vocabView.n) || null;
 }
 
+function currentCard() {
+  const d = currentDeck();
+  if (!d || !vocabView.queue || !vocabView.queue.length) return null;
+  return d.cards.find(c => c.term === vocabView.queue[0]) || null;
+}
+
+// La file ne se vide que lorsque toutes les cartes sont acquises : atteindre
+// ce point SIGNIFIE que le deck est acquis, il n'y a plus de seuil à vérifier.
 function finishDeck() {
   const d = currentDeck();
   if (!d) return;
-  const score = vocabView.results.filter(Boolean).length;
-  const learned = score >= DECK_PASS_MARK;
   const key = deckKey(vocabView.skill, d.n);
   const previous = vocab.decks[key];
+  const alreadyLogged = !!(previous && previous.learned);
 
-  // On ne rétrograde jamais un deck déjà acquis, et on ne journalise
-  // l'acquisition qu'une seule fois.
-  const alreadyLearned = !!(previous && previous.learned);
   vocab.decks[key] = {
-    score: Math.max(score, previous ? previous.score || 0 : 0),
-    learned: alreadyLearned || learned,
+    learned: true,
+    reviews: (previous && previous.reviews ? previous.reviews : 0) + 1,
+    lastSeen: vocabView.seen,
     date: todayKeyNow
   };
-  if (learned && !alreadyLearned) {
-    logVocabEvent({ kind: 'deck', skill: vocabView.skill, n: d.n, score });
+  // L'acquisition n'est journalisée qu'une fois : les révisions d'entretien
+  // ultérieures ne doivent pas regonfler le calendrier.
+  if (!alreadyLogged) {
+    logVocabEvent({ kind: 'deck', skill: vocabView.skill, n: d.n, score: d.cards.length });
   }
   saveVocab();
   vocabView.mode = 'deckResult';
@@ -2762,18 +2868,21 @@ function renderDeckList(skill) {
 
     <div class="deck-grid">
       ${decks.map(d => {
-        const st = vocab.decks[deckKey(skill, d.n)];
         const learned = isDeckLearned(skill, d.n);
+        const p = deckProgress(skill, d.n);
+        const started = d.cards.some(c => getCardLevel(skill, d.n, c.term) > 0);
         return `
           <div class="deck-card ${learned ? 'learned' : ''}">
             <div class="deck-num">${d.n}</div>
             <div class="deck-info">
               <div class="deck-title">${escapeHTML(d.title)}</div>
-              <div class="deck-sub">${d.cards.length} cartes${st ? ` · meilleur : ${st.score}/${d.cards.length}` : ''}</div>
+              <div class="deck-sub">${p.mastered}/${p.total} cartes acquises</div>
+              <div class="deck-mini-bar"><div class="deck-mini-fill" style="width:${p.ratio * 100}%"></div></div>
             </div>
             <div class="deck-actions">
-              <button class="deck-btn primary" onclick="openDeck('${skill}', ${d.n})">${learned ? 'Réviser' : 'Apprendre'}</button>
+              <button class="deck-btn primary" onclick="openDeck('${skill}', ${d.n})">${learned ? 'Réviser' : (started ? 'Continuer' : 'Apprendre')}</button>
               <button class="deck-btn" onclick="openTable('${skill}', ${d.n})">Tableau</button>
+              ${started ? `<button class="deck-btn tiny" onclick="resetDeckProgress('${skill}', ${d.n})">Réinitialiser</button>` : ''}
             </div>
             ${learned ? '<div class="deck-badge ok abs">✓</div>' : ''}
           </div>
@@ -2793,20 +2902,28 @@ function renderDeckList(skill) {
 function renderFlash(skill) {
   const d = currentDeck();
   if (!d) return renderDeckList(skill);
-  const card = d.cards[vocabView.i];
-  const total = d.cards.length;
-  const known = vocabView.results.filter(Boolean).length;
-  const enToFr = cardIsEnToFr(vocabView.i);
+  const card = currentCard();
+  if (!card) return renderDeckList(skill);
+
+  const prog = deckProgress(skill, d.n);
+  const level = getCardLevel(skill, d.n, card.term);
+  const lv = CARD_LEVELS[level];
+  const enToFr = cardIsEnToFr(vocabView.seen);
   const front = enToFr ? card.term : card.fr;
   const back = enToFr ? card.fr : card.term;
 
   return `
     <div class="vocab-topbar">
       <button class="deck-btn" onclick="backToDeckList()">← Decks</button>
-      <span>Deck ${d.n} · carte ${vocabView.i + 1}/${total}</span>
-      <span class="vocab-score">${known} sues</span>
+      <span>Deck ${d.n} · ${vocabView.queue.length} en file</span>
+      <span class="vocab-score">${prog.mastered}/${prog.total} acquises</span>
     </div>
-    <div class="vocab-bar"><div class="vocab-bar-fill" style="width:${(vocabView.i / total) * 100}%"></div></div>
+    <div class="vocab-bar"><div class="vocab-bar-fill" style="width:${prog.ratio * 100}%"></div></div>
+
+    <div class="level-track" title="Palier de cette carte">
+      ${CARD_LEVELS.map(l => `<span class="level-dot ${l.id <= level ? 'on' : ''} lvl${l.id}"></span>`).join('')}
+      <span class="level-name" style="color:${lv.color}">${escapeHTML(lv.label)}</span>
+    </div>
 
     <div class="flashcard ${vocabView.flipped ? 'flipped' : ''}" onclick="flipCard()">
       <div class="flash-dir">${enToFr ? 'EN → FR' : 'FR → EN'}</div>
@@ -2823,7 +2940,7 @@ function renderFlash(skill) {
     ${vocabView.flipped ? `
       <div class="flash-actions">
         <button class="deck-btn wide danger" onclick="markCard(false)">À revoir</button>
-        <button class="deck-btn wide primary" onclick="markCard(true)">Je la sais</button>
+        <button class="deck-btn wide primary" onclick="markCard(true)">Je la sais<span class="btn-sub">${level + 1 >= CARD_MASTERED ? 'acquise' : '+1 palier'}</span></button>
       </div>
     ` : ''}
   `;
@@ -2832,23 +2949,20 @@ function renderFlash(skill) {
 function renderDeckResult(skill) {
   const d = currentDeck();
   if (!d) return renderDeckList(skill);
-  const score = vocabView.results.filter(Boolean).length;
   const total = d.cards.length;
-  const learned = score >= DECK_PASS_MARK;
   const block = blockOf(d.n);
   const blockNowReady = isBlockComplete(skill, block) && !(vocab.tests[deckKey(skill, block)] || {}).passed;
+  const hesitations = vocabView.demoted;
 
   return `
-    <div class="result-box ${learned ? 'pass' : 'fail'}">
-      <div class="result-score">${score}/${total}</div>
-      <div class="result-label">${learned ? '✓ Deck acquis' : `Il faut ${DECK_PASS_MARK}/${total} pour valider`}</div>
-      <p>${learned
-        ? 'Enregistré dans le calendrier à la date du jour.'
-        : 'Rien n\'est enregistré tant que le deck n\'est pas acquis. Reprenez-le.'}</p>
+    <div class="result-box pass">
+      <div class="result-score">${total}/${total}</div>
+      <div class="result-label">✓ Deck entièrement acquis</div>
+      <p>Toutes les cartes ont atteint le dernier palier en ${vocabView.seen} passage${vocabView.seen > 1 ? 's' : ''}${hesitations ? `, dont ${hesitations} remise${hesitations > 1 ? 's' : ''} en arrière` : ', sans aucune hésitation'}. Enregistré dans le calendrier.</p>
     </div>
     ${blockNowReady ? `<div class="tip-box"><span class="tip-icon">🎯</span><span>Les ${DECKS_PER_BLOCK} decks du bloc sont acquis : le test de synthèse est débloqué.</span></div>` : ''}
     <div class="flash-actions">
-      <button class="deck-btn wide" onclick="retryDeck()">Refaire le deck</button>
+      <button class="deck-btn wide" onclick="retryDeck()">Réviser à nouveau</button>
       <button class="deck-btn wide primary" onclick="backToDeckList()">Retour aux decks</button>
     </div>
   `;
@@ -2868,15 +2982,17 @@ function renderVocabTable(skill) {
     ${isDeckCustomised(skill, d.n) ? '<div class="edit-note">Ce deck a été personnalisé.</div>' : ''}
     <div class="example-table-wrap">
       <table class="example-table vocab-table">
-        <thead><tr><th>Terme</th><th>Sens</th><th>Nature</th></tr></thead>
+        <thead><tr><th>Terme</th><th>Sens</th><th>Palier</th></tr></thead>
         <tbody>
-          ${d.cards.map(c => `
+          ${d.cards.map(c => {
+            const lv = CARD_LEVELS[getCardLevel(skill, d.n, c.term)];
+            return `
             <tr>
-              <td><strong>${escapeHTML(c.term)}</strong><div class="cell-example">${escapeHTML(c.example)}</div></td>
+              <td><strong>${escapeHTML(c.term)}</strong><div class="cell-example">${escapeHTML(c.type)} · ${escapeHTML(c.example)}</div></td>
               <td>${escapeHTML(c.fr)}</td>
-              <td>${escapeHTML(c.type)}</td>
-            </tr>
-          `).join('')}
+              <td><span class="lvl-pill" style="color:${lv.color};border-color:${lv.color}">${escapeHTML(lv.short)}</span></td>
+            </tr>`;
+          }).join('')}
         </tbody>
       </table>
     </div>
@@ -3413,7 +3529,7 @@ function renderSkillModule(skillName) {
     const decks = getDecks(skillName);
     const learned = decks.filter(d => isDeckLearned(skillName, d.n)).length;
     heading = vocabView.mode === 'list'
-      ? `<h2>Vocabulaire</h2><p style="margin-bottom:14px">${decks.length} decks de ${CARDS_PER_DECK} cartes · ${learned} acquis. Un test de synthèse se débloque tous les ${DECKS_PER_BLOCK} decks.</p>`
+      ? `<h2>Vocabulaire</h2><p style="margin-bottom:14px">${decks.length} decks de ${CARDS_PER_DECK} cartes · ${learned} acquis. Chaque deck tourne en boucle jusqu'à ce que toutes ses cartes soient acquises. Un test de synthèse se débloque tous les ${DECKS_PER_BLOCK} decks.</p>`
       : '';
     body = renderVocab(skillName);
   } else if (currentSubTab === 'exercises') {
